@@ -98,26 +98,40 @@ def call_ai_api(config, prompt):
         model   = config.get("openai_model", "gpt-4o")
 
     elif provider == "gemini":
-        # Google AI Studio — native generateContent REST API
-        # Key goes in the URL (not a header) — works with all key formats
-        model   = config.get("gemini_model", "gemini-2.0-flash")
-        url     = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                   f"{model}:generateContent?key={api_key}")
-        headers = {"Content-Type": "application/json"}
-        body    = json.dumps({
+        # Google AI Studio — native generateContent REST API.
+        # Try multiple auth styles + API versions because Google issues keys
+        # in different formats (AIza... = URL param, AQ.... = Bearer token).
+        model = config.get("gemini_model", "gemini-1.5-flash")
+        gemini_body = json.dumps({
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.2},
         }).encode("utf-8")
-        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-            return result["candidates"][0]["content"]["parts"][0]["text"]
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Gemini API error {e.code}:\n{detail}")
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"Network error: {e.reason}\n\nCheck your internet connection.")
+
+        last_err = None
+        for base in ["v1beta", "v1"]:
+            for auth_style in ["url_param", "bearer"]:
+                if auth_style == "url_param":
+                    url  = (f"https://generativelanguage.googleapis.com/{base}/models/"
+                            f"{model}:generateContent?key={api_key}")
+                    hdrs = {"Content-Type": "application/json"}
+                else:
+                    url  = (f"https://generativelanguage.googleapis.com/{base}/models/"
+                            f"{model}:generateContent")
+                    hdrs = {"Content-Type": "application/json",
+                            "Authorization": f"Bearer {api_key}"}
+                try:
+                    req = urllib.request.Request(url, data=gemini_body, headers=hdrs, method="POST")
+                    with urllib.request.urlopen(req, timeout=90) as resp:
+                        result = json.loads(resp.read().decode("utf-8"))
+                    return result["candidates"][0]["content"]["parts"][0]["text"]
+                except urllib.error.HTTPError as e:
+                    detail = e.read().decode("utf-8", errors="replace")
+                    last_err = f"Gemini API error {e.code} ({base}, {auth_style}):\n{detail}"
+                    if e.code not in (400, 401, 403, 404):
+                        break   # non-auth error (e.g. 429 quota) — no point retrying styles
+                except urllib.error.URLError as e:
+                    raise RuntimeError(f"Network error: {e.reason}")
+        raise RuntimeError(last_err or "Gemini: all authentication styles failed.")
 
     elif provider == "groq":
         url     = "https://api.groq.com/openai/v1/chat/completions"
@@ -759,7 +773,13 @@ class SettingsDialog(tk.Toplevel):
                 else:
                     self._status.config(text=f"✔  Connected — reply: {reply[:60]}", fg="#1a7f37")
             except Exception as ex:
-                self._status.config(text=f"✖  {ex}", fg="#cc4444")
+                msg = str(ex)
+                # Show first line in status label, full detail in a popup
+                first_line = msg.splitlines()[0][:120]
+                self._status.config(text=f"✖  {first_line}", fg="#cc4444")
+                if len(msg) > 120:
+                    self.after(0, lambda m=msg: messagebox.showerror(
+                        "Connection error — full detail", m, parent=self))
         threading.Thread(target=run, daemon=True).start()
 
     def _save(self):
