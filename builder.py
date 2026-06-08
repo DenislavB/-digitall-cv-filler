@@ -245,10 +245,12 @@ def _remove_empty_tech_bullets(body):
 
 
 def _replace_education(body, edu_list):
-    """Replace education fields (Degree, Institute, Location, Year lines)."""
+    """Replace education fields (Degree, Institute, Location, Year lines).
+    Note: the DIGITALL template has a single education block.
+    Only the first entry is written; extras are ignored (visible in the form)."""
     if not edu_list:
         return
-    edu = edu_list[0]  # Use first education entry
+    edu = edu_list[0]  # Template only has one education slot
 
     _replace_inline_field(body, "Degree:", edu.get("degree", ""))
     _replace_inline_field(body, "Institute:", edu.get("institute", ""))
@@ -348,9 +350,8 @@ def _replace_certifications(body, certs):
         if pstyle is not None and pstyle.get(_w("val")) == "Aufzhlung":
             cert_paras.append(p)
         else:
-            # Stop at the next major section
-            txt = _get_text(p).strip()
-            if txt and txt not in cert_paras:
+            # Stop at the next major section (first non-empty, non-Aufzhlung paragraph)
+            if _get_text(p).strip():
                 break
 
     if not cert_paras:
@@ -479,8 +480,12 @@ def _make_responsibilities_cell(responsibilities, border_spec=None, width=6095):
                 el.set(_w(k), v)
     etree.SubElement(tcp, _w("shd"), {_w("val"): "clear", _w("color"): "auto", _w("fill"): "auto"})
 
+    # Always have at least one paragraph so the cell isn't empty (Word requires it)
+    # but don't render a visible blank bullet — use a truly empty paragraph instead.
     if not responsibilities:
-        responsibilities = [""]
+        p = etree.SubElement(tc, _w("p"))
+        etree.SubElement(p, _w("pPr"))
+        return tc
 
     for item in responsibilities:
         p = etree.SubElement(tc, _w("p"))

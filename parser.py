@@ -22,6 +22,13 @@ def extract_text_from_pdf(filepath):
 
 
 def extract_text_from_docx(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext == ".doc":
+        raise RuntimeError(
+            "Old-format .doc files are not supported.\n\n"
+            "Please open the CV in Microsoft Word and save it as .docx (File → Save As → Word Document), "
+            "then try again."
+        )
     from docx import Document
     doc = Document(filepath)
     lines = []
@@ -72,8 +79,9 @@ SECTION_MAP = [
                         "positions held", "career summary"]),
     ("education",      ["education", "academic", "qualifications", "academic background",
                         "studies", "academic history"]),
-    ("skills",         ["skill", "technical skill", "competenc", "technolog",
-                        "core competenc", "key skill", "expertise"]),
+    ("skills",         ["technical skill", "competenc", "technolog",
+                        "core competenc", "key skill", "expertise",
+                        "skills", "skill set", "it skills", "soft skill"]),
     ("languages",      ["language"]),
     ("certifications", ["certif", "course", "training", "license", "award",
                         "accreditation", "qualification"]),
@@ -205,9 +213,12 @@ def parse_education(lines):
         if not stripped:
             continue
 
-        ym = re.search(r"(\d{4})\s*[-–]\s*(\d{4}|present|current)", stripped, re.I)
+        # Match various date formats: YYYY–YYYY, MM/YYYY–MM/YYYY, Month YYYY–...
+        ym = (re.search(r"\d{1,2}[/\.]\d{4}\s*[-–—]\s*(?:\d{1,2}[/\.]\d{4}|present|current)", stripped, re.I)
+              or re.search(r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?\s*\d{4}\s*[-–—]", stripped, re.I)
+              or re.search(r"\d{4}\s*[-–—]\s*(?:\d{4}|present|current)", stripped, re.I))
         if ym:
-            cur["year"] = ym.group(0)
+            cur["year"] = ym.group(0).strip(" -–—")
             continue
 
         if re.search(r"bachelor|master|phd|doctor|associate|diploma|degree|b\.s|m\.s|b\.a|m\.a|mba|llb|bsc|msc", stripped, re.I):
@@ -372,8 +383,12 @@ def parse_work_experience(lines):
         elif not cur["position"] and _TITLE_KEYWORDS.search(clean) and len(clean) < 80:
             cur["position"] = clean
 
-        elif re.search(r"(?i)(sofia|london|berlin|paris|amsterdam|bucharest|warsaw|prague|"
-                        r"budapest|vienna|zurich|dubai|new york|singapore)", clean) and len(clean) < 60:
+        elif re.search(
+                r"(?i)\b(sofia|plovdiv|varna|burgas|london|berlin|paris|amsterdam|"
+                r"bucharest|warsaw|prague|budapest|vienna|zurich|dubai|new york|"
+                r"singapore|munich|hamburg|frankfurt|madrid|barcelona|milan|rome|"
+                r"stockholm|oslo|copenhagen|helsinki|brussels|lisbon|athens|"
+                r"kyiv|moscow|istanbul|toronto|sydney|remote)\b", clean) and len(clean) < 60:
             cur["location"] = clean
 
         else:
