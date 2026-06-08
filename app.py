@@ -494,8 +494,43 @@ def _clean_json_text(text):
             i += 1
             continue
         if ch == '"':
-            in_string = not in_string
-            result.append(ch)
+            if in_string:
+                # Decide: is this a real closing quote, or an unescaped inner quote?
+                # Strategy: look ahead (skip spaces/tabs) and check what follows.
+                j = i + 1
+                while j < len(text) and text[j] in ' \t':
+                    j += 1
+                next_ch = text[j] if j < len(text) else ''
+
+                if next_ch in (',', '}', ']', ''):
+                    # e.g.  "Sofia, Bulgaria",   or  "value"}   → real closing quote
+                    in_string = False
+                    result.append('"')
+                elif next_ch in ('\n', '\r'):
+                    # End of line right after " → real closing quote
+                    in_string = False
+                    result.append('"')
+                elif next_ch == '"':
+                    # Two consecutive quotes, e.g.  Karavelov"",
+                    # The current " is inner, the next " is the real closer.
+                    k = j + 1
+                    while k < len(text) and text[k] in ' \t':
+                        k += 1
+                    after = text[k] if k < len(text) else ''
+                    if after in (',', '}', ']', '\n', '\r', ''):
+                        # Pattern confirmed: inner" closing",  → escape current
+                        result.append('\\"')
+                    else:
+                        # Ambiguous – treat as closing
+                        in_string = False
+                        result.append('"')
+                else:
+                    # Next char is a letter/digit (e.g.  VSU "Lyuben…)
+                    # → this is an unescaped inner quote; escape it
+                    result.append('\\"')
+            else:
+                in_string = True
+                result.append('"')
             i += 1
             continue
         if in_string and ch == '\n':
