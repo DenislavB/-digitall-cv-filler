@@ -7,6 +7,9 @@ import os
 import sys
 import json
 import re
+import threading
+import urllib.request
+import urllib.error
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -27,6 +30,91 @@ FONT      = ("Segoe UI", 10)
 FONT_BOLD = ("Segoe UI", 10, "bold")
 FONT_H    = ("Segoe UI", 13, "bold")
 FONT_SM   = ("Segoe UI", 9)
+
+
+# ── config (persisted to config.json next to the script) ─────────────────────
+
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+_DEFAULT_CONFIG = {
+    "provider":          "clipboard",   # "clipboard" | "azure_openai" | "openai"
+    "azure_endpoint":    "",            # e.g. https://myresource.openai.azure.com
+    "azure_deployment":  "gpt-4o",
+    "azure_api_version": "2024-02-01",
+    "openai_model":      "gpt-4o",
+    "api_key":           "",
+}
+
+def load_config():
+    if os.path.exists(_CONFIG_PATH):
+        try:
+            with open(_CONFIG_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+            cfg = dict(_DEFAULT_CONFIG)
+            cfg.update(data)
+            return cfg
+        except Exception:
+            pass
+    return dict(_DEFAULT_CONFIG)
+
+def save_config(cfg):
+    with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+
+
+# ── AI API caller ─────────────────────────────────────────────────────────────
+
+def call_ai_api(config, prompt):
+    """
+    Call Azure OpenAI or OpenAI with the given prompt.
+    Returns the assistant's reply as a string.
+    Raises RuntimeError on failure.
+    """
+    provider = config.get("provider", "clipboard")
+    api_key  = config.get("api_key", "").strip()
+
+    if not api_key:
+        raise RuntimeError("No API key configured. Open Settings ⚙ to add one.")
+
+    body = json.dumps({
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 4096,
+        "temperature": 0.2,
+    }).encode("utf-8")
+
+    if provider == "azure_openai":
+        endpoint   = config.get("azure_endpoint", "").rstrip("/")
+        deployment = config.get("azure_deployment", "gpt-4o")
+        api_ver    = config.get("azure_api_version", "2024-02-01")
+        if not endpoint:
+            raise RuntimeError("Azure endpoint URL is not configured. Open Settings ⚙.")
+        url     = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_ver}"
+        headers = {"Content-Type": "application/json", "api-key": api_key}
+
+    elif provider == "openai":
+        model   = config.get("openai_model", "gpt-4o")
+        url     = "https://api.openai.com/v1/chat/completions"
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+        body    = json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 4096,
+            "temperature": 0.2,
+        }).encode("utf-8")
+
+    else:
+        raise RuntimeError("Provider is set to 'clipboard'. Open Settings ⚙ to configure an API.")
+
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        return result["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")[:300]
+        raise RuntimeError(f"API error {e.code}: {detail}")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Network error: {e.reason}\n\nCheck your internet connection and endpoint URL.")
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -455,7 +543,139 @@ def parse_copilot_response(raw_text):
         )
 
 
-# ── Copilot dialog window ─────────────────────────────────────────────────────
+# ── Settings dialog ──────────────────────────────────────────────────────────
+
+class SettingsDialog(tk.Toplevel):
+    def __init__(self, parent, config, on_save):
+        super().__init__(parent)
+        self.title("AI Settings")
+        self.geometry("560x480")
+        self.resizable(False, False)
+        self.configure(bg=BG)
+        self.grab_set()
+        self._config  = dict(config)
+        self._on_save = on_save
+        self._build()
+
+    def _build(self):
+        # Header
+        hdr = tk.Frame(self, bg=ACCENT, height=44)
+        hdr.pack(fill="x"); hdr.pack_propagate(False)
+        tk.Label(hdr, text="⚙  AI Provider Settings", bg=ACCENT, fg="white",
+                 font=FONT_BOLD).pack(side="left", padx=16)
+
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", expand=True, padx=20, pady=14)
+
+        # Provider
+        tk.Label(body, text="Provider", bg=BG, fg=LABEL_FG, font=FONT_BOLD).grid(
+            row=0, column=0, sticky="w", pady=(0, 4))
+        self._provider = tk.StringVar(value=self._config.get("provider", "clipboard"))
+        prov_frame = tk.Frame(body, bg=BG)
+        prov_frame.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        for val, lbl in [("clipboard", "Clipboard only (no API)"),
+                         ("azure_openai", "Azure OpenAI  (Microsoft Copilot / work tenant)"),
+                         ("openai",       "OpenAI  (ChatGPT API)")]:
+            tk.Radiobutton(prov_frame, text=lbl, variable=self._provider, value=val,
+                           bg=BG, fg=LABEL_FG, font=FONT, activebackground=BG,
+                           command=self._on_provider_change).pack(anchor="w")
+
+        # Dynamic fields frame
+        self._fields_frame = tk.LabelFrame(body, text="  Connection details  ",
+                                           bg=BG, fg=ACCENT, font=FONT_BOLD,
+                                           relief="groove", bd=1)
+        self._fields_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        body.columnconfigure(0, weight=1)
+        self._draw_fields()
+
+        # Buttons
+        btn_row = tk.Frame(body, bg=BG)
+        btn_row.grid(row=3, column=0, columnspan=2, sticky="e")
+        _btn(btn_row, "Test connection", self._test, width=18,
+             bg="#6c757d", hover="#5a6268").pack(side="left", padx=(0, 8))
+        _btn(btn_row, "Save", self._save, width=10).pack(side="left", padx=(0, 6))
+        tk.Button(btn_row, text="Cancel", command=self.destroy,
+                  bg=BG, fg=LABEL_FG, font=FONT, relief="flat", bd=0,
+                  padx=10, pady=6, cursor="hand2").pack(side="left")
+
+        self._status = tk.Label(body, text="", bg=BG, font=FONT_BOLD)
+        self._status.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+    def _draw_fields(self):
+        for w in self._fields_frame.winfo_children():
+            w.destroy()
+        prov = self._provider.get()
+        if prov == "clipboard":
+            tk.Label(self._fields_frame,
+                     text="No API key needed — uses clipboard to bridge any AI.",
+                     bg=BG, fg=SECTION_FG, font=FONT).pack(padx=12, pady=10)
+            return
+
+        fields = []
+        if prov == "azure_openai":
+            fields = [
+                ("Azure endpoint URL", "azure_endpoint",
+                 "e.g. https://myresource.openai.azure.com"),
+                ("Deployment name",    "azure_deployment",  "e.g. gpt-4o"),
+                ("API version",        "azure_api_version", "e.g. 2024-02-01"),
+                ("API key",            "api_key",           "Your Azure OpenAI key"),
+            ]
+        elif prov == "openai":
+            fields = [
+                ("Model",   "openai_model", "e.g. gpt-4o  or  gpt-4o-mini"),
+                ("API key", "api_key",      "sk-..."),
+            ]
+
+        self._field_vars = {}
+        for i, (lbl, key, hint) in enumerate(fields):
+            tk.Label(self._fields_frame, text=lbl, bg=BG, fg=LABEL_FG,
+                     font=FONT_BOLD, anchor="w").grid(row=i*2, column=0,
+                     sticky="w", padx=12, pady=(8, 2))
+            var = tk.StringVar(value=self._config.get(key, ""))
+            show = "*" if key == "api_key" else ""
+            e = tk.Entry(self._fields_frame, textvariable=var, font=FONT,
+                         relief="solid", bd=1, width=52, show=show)
+            e.grid(row=i*2+1, column=0, sticky="ew", padx=12, pady=(0, 2))
+            tk.Label(self._fields_frame, text=hint, bg=BG, fg=SECTION_FG,
+                     font=FONT_SM).grid(row=i*2+1, column=1, sticky="w", padx=4)
+            self._fields_frame.columnconfigure(0, weight=1)
+            self._field_vars[key] = var
+
+    def _on_provider_change(self):
+        self._draw_fields()
+
+    def _collect(self):
+        cfg = dict(self._config)
+        cfg["provider"] = self._provider.get()
+        for key, var in getattr(self, "_field_vars", {}).items():
+            cfg[key] = var.get().strip()
+        return cfg
+
+    def _test(self):
+        cfg = self._collect()
+        if cfg["provider"] == "clipboard":
+            self._status.config(text="ℹ  Clipboard mode — no connection to test.", fg=SECTION_FG)
+            return
+        self._status.config(text="Testing…", fg=LABEL_FG)
+        self.update()
+        def run():
+            try:
+                reply = call_ai_api(cfg, 'Reply with exactly: {"status":"ok"}')
+                if "ok" in reply.lower():
+                    self._status.config(text="✔  Connection successful!", fg="#1a7f37")
+                else:
+                    self._status.config(text=f"✔  Connected — reply: {reply[:60]}", fg="#1a7f37")
+            except Exception as ex:
+                self._status.config(text=f"✖  {ex}", fg="#cc4444")
+        threading.Thread(target=run, daemon=True).start()
+
+    def _save(self):
+        cfg = self._collect()
+        self._on_save(cfg)
+        self.destroy()
+
+
+# ── Copilot / AI dialog window ────────────────────────────────────────────────
 
 class CopilotDialog(tk.Toplevel):
     """Two-step dialog: copy prompt → paste response."""
@@ -641,7 +861,8 @@ class App(tk.Tk):
         except Exception:
             pass
         self._source_path = tk.StringVar(value="No file selected")
-        self._raw_cv_text = ""   # cached raw text for Copilot prompt
+        self._raw_cv_text = ""
+        self._config      = load_config()
         self._build_ui()
 
     # ── UI construction ───────────────────────────────────────────────────
@@ -655,6 +876,8 @@ class App(tk.Tk):
                  font=("Segoe UI", 18, "bold")).pack(side="left", padx=20)
         tk.Label(hdr, text="DIGITALL Format", bg=ACCENT, fg="#9AB5D0",
                  font=("Segoe UI", 11)).pack(side="left", padx=0)
+        _btn(hdr, "⚙  Settings", self._open_settings,
+             width=12, bg="#1a3370", hover="#0f2050").pack(side="right", padx=12, pady=8)
 
         # ── source file row ───────────────────────────────────────────────
         file_row = tk.Frame(self, bg=BG)
@@ -666,17 +889,10 @@ class App(tk.Tk):
         _btn(file_row, "Browse…", self._browse_source, width=10).pack(side="left", padx=4)
         _btn(file_row, "Parse CV", self._parse_cv, width=10).pack(side="left", padx=4)
 
-        # ── Copilot row ───────────────────────────────────────────────────
-        cop_row = tk.Frame(self, bg="#EBF3FB", bd=0)
-        cop_row.pack(fill="x", padx=20, pady=(0, 8))
-        cop_inner = tk.Frame(cop_row, bg="#EBF3FB")
-        cop_inner.pack(fill="x", padx=8, pady=6)
-        tk.Label(cop_inner, text="🤖  Better results with Copilot:", bg="#EBF3FB",
-                 fg=ACCENT2, font=FONT_BOLD).pack(side="left")
-        tk.Label(cop_inner, text="Load a CV first, then use Copilot for AI-powered extraction.",
-                 bg="#EBF3FB", fg=LABEL_FG, font=FONT_SM).pack(side="left", padx=8)
-        _btn(cop_inner, "Use Copilot ✨", self._open_copilot_dialog,
-             width=16, bg=COP_BG, hover=COP_HOVER).pack(side="right")
+        # ── AI row ────────────────────────────────────────────────────────
+        self._ai_row = tk.Frame(self, bg="#EBF3FB", bd=0)
+        self._ai_row.pack(fill="x", padx=20, pady=(0, 8))
+        self._rebuild_ai_row()
 
         # ── notebook ─────────────────────────────────────────────────────
         style = ttk.Style()
@@ -775,6 +991,74 @@ class App(tk.Tk):
 
         _btn(bot, "Generate CV", self._generate, width=14).pack(side="right")
 
+    # ── AI row helpers ────────────────────────────────────────────────────
+
+    def _rebuild_ai_row(self):
+        for w in self._ai_row.winfo_children():
+            w.destroy()
+        inner = tk.Frame(self._ai_row, bg="#EBF3FB")
+        inner.pack(fill="x", padx=8, pady=6)
+
+        provider = self._config.get("provider", "clipboard")
+        has_api  = provider != "clipboard" and bool(self._config.get("api_key", "").strip())
+
+        if has_api:
+            label = {"azure_openai": "Azure OpenAI (Copilot)", "openai": "OpenAI (ChatGPT)"}.get(provider, "AI")
+            tk.Label(inner, text=f"🤖  {label} connected —",
+                     bg="#EBF3FB", fg="#1a7f37", font=FONT_BOLD).pack(side="left")
+            tk.Label(inner, text="load a CV then auto-fill the form in one click.",
+                     bg="#EBF3FB", fg=LABEL_FG, font=FONT_SM).pack(side="left", padx=8)
+            _btn(inner, "✨ Auto-fill with AI", self._autofill_with_api,
+                 width=20, bg="#1a7f37", hover="#155a2e").pack(side="right")
+        else:
+            tk.Label(inner, text="🤖  Better results with AI:", bg="#EBF3FB",
+                     fg=ACCENT2, font=FONT_BOLD).pack(side="left")
+            tk.Label(inner, text="Use the clipboard bridge, or configure an API key in Settings ⚙.",
+                     bg="#EBF3FB", fg=LABEL_FG, font=FONT_SM).pack(side="left", padx=8)
+            _btn(inner, "Use AI ✨", self._open_ai_dialog,
+                 width=14, bg=COP_BG, hover=COP_HOVER).pack(side="right")
+
+    def _open_settings(self):
+        def on_save(cfg):
+            self._config = cfg
+            save_config(cfg)
+            self._rebuild_ai_row()
+            self._status.config(text="✔  Settings saved.")
+        SettingsDialog(self, self._config, on_save)
+
+    def _autofill_with_api(self):
+        path = self._source_path.get()
+        if not path or path == "No file selected":
+            messagebox.showwarning("No file", "Please browse to a CV file first.")
+            return
+        self._status.config(text="Extracting CV text…"); self.update()
+        try:
+            raw = self._load_raw_text()
+        except Exception as ex:
+            messagebox.showerror("Extraction failed", str(ex))
+            self._status.config(text=""); return
+
+        prompt = build_copilot_prompt(raw)
+        self._status.config(text="Sending to AI — please wait…"); self.update()
+
+        def run():
+            try:
+                reply  = call_ai_api(self._config, prompt)
+                data   = parse_copilot_response(reply)
+                self.after(0, lambda: self._on_api_result(data))
+            except Exception as ex:
+                self.after(0, lambda: self._on_api_error(str(ex)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_api_result(self, data):
+        self._populate_form(data)
+        self._status.config(text="✔  Form filled by AI — review all tabs before generating.")
+
+    def _on_api_error(self, msg):
+        messagebox.showerror("AI error", msg)
+        self._status.config(text="")
+
     # ── actions ───────────────────────────────────────────────────────────
 
     def _browse_source(self):
@@ -825,7 +1109,7 @@ class App(tk.Tk):
         else:
             self._status.config(text="✔ CV parsed — review fields, or use Copilot ✨ for better extraction.")
 
-    def _open_copilot_dialog(self):
+    def _open_ai_dialog(self):
         path = self._source_path.get()
         if not path or path == "No file selected":
             messagebox.showwarning("No file", "Please browse to a CV file first.")
