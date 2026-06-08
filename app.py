@@ -37,11 +37,13 @@ FONT_SM   = ("Segoe UI", 9)
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 _DEFAULT_CONFIG = {
-    "provider":          "clipboard",   # "clipboard" | "azure_openai" | "openai"
+    "provider":          "clipboard",   # "clipboard" | "azure_openai" | "openai" | "gemini" | "groq"
     "azure_endpoint":    "",            # e.g. https://myresource.openai.azure.com
     "azure_deployment":  "gpt-4o",
     "azure_api_version": "2024-02-01",
     "openai_model":      "gpt-4o",
+    "gemini_model":      "gemini-2.0-flash",   # FREE: gemini-2.0-flash or gemini-1.5-flash
+    "groq_model":        "llama-3.3-70b-versatile",
     "api_key":           "",
 }
 
@@ -76,11 +78,9 @@ def call_ai_api(config, prompt):
     if not api_key:
         raise RuntimeError("No API key configured. Open Settings ⚙ to add one.")
 
-    body = json.dumps({
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 4096,
-        "temperature": 0.2,
-    }).encode("utf-8")
+    # Build URL, headers, and body depending on provider
+    # Gemini and Groq both expose an OpenAI-compatible endpoint —
+    # so all four providers share the same request/response format.
 
     if provider == "azure_openai":
         endpoint   = config.get("azure_endpoint", "").rstrip("/")
@@ -90,20 +90,33 @@ def call_ai_api(config, prompt):
             raise RuntimeError("Azure endpoint URL is not configured. Open Settings ⚙.")
         url     = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_ver}"
         headers = {"Content-Type": "application/json", "api-key": api_key}
+        model   = deployment
 
     elif provider == "openai":
-        model   = config.get("openai_model", "gpt-4o")
         url     = "https://api.openai.com/v1/chat/completions"
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-        body    = json.dumps({
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 4096,
-            "temperature": 0.2,
-        }).encode("utf-8")
+        model   = config.get("openai_model", "gpt-4o")
+
+    elif provider == "gemini":
+        # Google AI Studio — OpenAI-compatible endpoint (no extra libraries needed)
+        url     = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+        model   = config.get("gemini_model", "gemini-2.0-flash")
+
+    elif provider == "groq":
+        url     = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+        model   = config.get("groq_model", "llama-3.3-70b-versatile")
 
     else:
         raise RuntimeError("Provider is set to 'clipboard'. Open Settings ⚙ to configure an API.")
+
+    body = json.dumps({
+        "model":       model,
+        "messages":    [{"role": "user", "content": prompt}],
+        "max_tokens":  4096,
+        "temperature": 0.2,
+    }).encode("utf-8")
 
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
@@ -549,7 +562,7 @@ class SettingsDialog(tk.Toplevel):
     def __init__(self, parent, config, on_save):
         super().__init__(parent)
         self.title("AI Settings")
-        self.geometry("560x480")
+        self.geometry("620x520")
         self.resizable(False, False)
         self.configure(bg=BG)
         self.grab_set()
@@ -573,9 +586,13 @@ class SettingsDialog(tk.Toplevel):
         self._provider = tk.StringVar(value=self._config.get("provider", "clipboard"))
         prov_frame = tk.Frame(body, bg=BG)
         prov_frame.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 12))
-        for val, lbl in [("clipboard", "Clipboard only (no API)"),
-                         ("azure_openai", "Azure OpenAI  (Microsoft Copilot / work tenant)"),
-                         ("openai",       "OpenAI  (ChatGPT API)")]:
+        for val, lbl in [
+            ("clipboard",   "Clipboard only  (no API — paste into any AI manually)"),
+            ("gemini",      "Google Gemini  ✨ FREE — aistudio.google.com"),
+            ("groq",        "Groq  ✨ FREE — console.groq.com  (very fast)"),
+            ("openai",      "OpenAI  (ChatGPT API — paid)"),
+            ("azure_openai","Azure OpenAI  (Microsoft / work tenant — paid)"),
+        ]:
             tk.Radiobutton(prov_frame, text=lbl, variable=self._provider, value=val,
                            bg=BG, fg=LABEL_FG, font=FONT, activebackground=BG,
                            command=self._on_provider_change).pack(anchor="w")
@@ -611,8 +628,31 @@ class SettingsDialog(tk.Toplevel):
                      bg=BG, fg=SECTION_FG, font=FONT).pack(padx=12, pady=10)
             return
 
+        self._field_rows_offset = 0
         fields = []
-        if prov == "azure_openai":
+        if prov == "gemini":
+            # Show a help link label above the fields
+            tk.Label(self._fields_frame,
+                     text="Get your FREE API key → aistudio.google.com  (sign in with any Google account)",
+                     bg=BG, fg="#1a7f37", font=FONT).grid(
+                     row=0, column=0, columnspan=2, sticky="w", padx=12, pady=(8, 2))
+            fields = [
+                ("Model",   "gemini_model", "gemini-2.0-flash  (recommended, free)"),
+                ("API key", "api_key",      "Paste the key from AI Studio"),
+            ]
+            # Offset rows because we inserted a label at row 0
+            self._field_rows_offset = 1
+        elif prov == "groq":
+            tk.Label(self._fields_frame,
+                     text="Get your FREE API key → console.groq.com  (free sign-up, no credit card)",
+                     bg=BG, fg="#1a7f37", font=FONT).grid(
+                     row=0, column=0, columnspan=2, sticky="w", padx=12, pady=(8, 2))
+            fields = [
+                ("Model",   "groq_model", "llama-3.3-70b-versatile  (recommended, free)"),
+                ("API key", "api_key",    "Paste the key from Groq console"),
+            ]
+            self._field_rows_offset = 1
+        elif prov == "azure_openai":
             fields = [
                 ("Azure endpoint URL", "azure_endpoint",
                  "e.g. https://myresource.openai.azure.com"),
@@ -626,18 +666,20 @@ class SettingsDialog(tk.Toplevel):
                 ("API key", "api_key",      "sk-..."),
             ]
 
+        offset = getattr(self, "_field_rows_offset", 0)
         self._field_vars = {}
         for i, (lbl, key, hint) in enumerate(fields):
+            row_base = offset + i * 2
             tk.Label(self._fields_frame, text=lbl, bg=BG, fg=LABEL_FG,
-                     font=FONT_BOLD, anchor="w").grid(row=i*2, column=0,
+                     font=FONT_BOLD, anchor="w").grid(row=row_base, column=0,
                      sticky="w", padx=12, pady=(8, 2))
             var = tk.StringVar(value=self._config.get(key, ""))
             show = "*" if key == "api_key" else ""
             e = tk.Entry(self._fields_frame, textvariable=var, font=FONT,
                          relief="solid", bd=1, width=52, show=show)
-            e.grid(row=i*2+1, column=0, sticky="ew", padx=12, pady=(0, 2))
+            e.grid(row=row_base+1, column=0, sticky="ew", padx=12, pady=(0, 2))
             tk.Label(self._fields_frame, text=hint, bg=BG, fg=SECTION_FG,
-                     font=FONT_SM).grid(row=i*2+1, column=1, sticky="w", padx=4)
+                     font=FONT_SM).grid(row=row_base+1, column=1, sticky="w", padx=4)
             self._fields_frame.columnconfigure(0, weight=1)
             self._field_vars[key] = var
 
