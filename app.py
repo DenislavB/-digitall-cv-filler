@@ -135,7 +135,9 @@ def call_ai_api(config, prompt):
 
     elif provider == "groq":
         url     = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+        headers = {"Content-Type": "application/json",
+                   "Authorization": f"Bearer {api_key}",
+                   "User-Agent": "groq-python/0.11.0"}
         model   = config.get("groq_model", "llama-3.3-70b-versatile")
 
     else:
