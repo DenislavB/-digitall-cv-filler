@@ -1091,6 +1091,10 @@ class App(tk.Tk):
         nb.add(self._we_tab.master, text="Work Experience")
         self._we_tab.pack(fill="both", expand=True)
 
+        # ── progress bar (hidden until AI is working) ─────────────────────
+        self._progress = ttk.Progressbar(self, mode="indeterminate", length=400)
+        # not packed yet — shown only during AI call
+
         # ── bottom bar ────────────────────────────────────────────────────
         bot = tk.Frame(self, bg=BG)
         bot.pack(fill="x", padx=20, pady=10)
@@ -1146,25 +1150,37 @@ class App(tk.Tk):
             self._status.config(text="✔  Settings saved.")
         SettingsDialog(self, self._config, on_save)
 
+    def _start_progress(self, msg):
+        self._status.config(text=msg, fg=ACCENT)
+        self._progress.pack(fill="x", padx=20, pady=(0, 6), before=self._status.master)
+        self._progress.start(12)   # step every 12 ms → smooth animation
+        self.update()
+
+    def _stop_progress(self):
+        self._progress.stop()
+        self._progress.pack_forget()
+
     def _autofill_with_api(self):
         path = self._source_path.get()
         if not path or path == "No file selected":
             messagebox.showwarning("No file", "Please browse to a CV file first.")
             return
-        self._status.config(text="Extracting CV text…"); self.update()
+
+        self._start_progress("📄  Extracting CV text…")
         try:
             raw = self._load_raw_text()
         except Exception as ex:
+            self._stop_progress()
             messagebox.showerror("Extraction failed", str(ex))
             self._status.config(text=""); return
 
         prompt = build_copilot_prompt(raw)
-        self._status.config(text="Sending to AI — please wait…"); self.update()
+        self._start_progress("🤖  Sending to AI — please wait…")
 
         def run():
             try:
-                reply  = call_ai_api(self._config, prompt)
-                data   = parse_copilot_response(reply)
+                reply = call_ai_api(self._config, prompt)
+                data  = parse_copilot_response(reply)
                 self.after(0, lambda: self._on_api_result(data))
             except Exception as ex:
                 self.after(0, lambda: self._on_api_error(str(ex)))
@@ -1172,10 +1188,13 @@ class App(tk.Tk):
         threading.Thread(target=run, daemon=True).start()
 
     def _on_api_result(self, data):
+        self._stop_progress()
         self._populate_form(data)
-        self._status.config(text="✔  Form filled by AI — review all tabs before generating.")
+        self._status.config(text="✔  Form filled by AI — review all tabs before generating.",
+                            fg="#1a7f37")
 
     def _on_api_error(self, msg):
+        self._stop_progress()
         messagebox.showerror("AI error", msg)
         self._status.config(text="")
 
