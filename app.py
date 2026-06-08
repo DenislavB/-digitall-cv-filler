@@ -98,10 +98,26 @@ def call_ai_api(config, prompt):
         model   = config.get("openai_model", "gpt-4o")
 
     elif provider == "gemini":
-        # Google AI Studio — OpenAI-compatible endpoint (no extra libraries needed)
-        url     = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+        # Google AI Studio — native generateContent REST API
+        # Key goes in the URL (not a header) — works with all key formats
         model   = config.get("gemini_model", "gemini-2.0-flash")
+        url     = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                   f"{model}:generateContent?key={api_key}")
+        headers = {"Content-Type": "application/json"}
+        body    = json.dumps({
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.2},
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            return result["candidates"][0]["content"]["parts"][0]["text"]
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")[:400]
+            raise RuntimeError(f"API error {e.code}: {detail}")
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"Network error: {e.reason}\n\nCheck your internet connection.")
 
     elif provider == "groq":
         url     = "https://api.groq.com/openai/v1/chat/completions"
