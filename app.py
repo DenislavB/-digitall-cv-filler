@@ -8,10 +8,34 @@ import sys
 import json
 import re
 import threading
+import webbrowser
 import urllib.request
 import urllib.error
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+
+VERSION = "1.0.0"
+_GITHUB_RELEASES_API = "https://api.github.com/repos/DenislavB/-digitall-cv-filler/releases/latest"
+_GITHUB_RELEASES_PAGE = "https://github.com/DenislavB/-digitall-cv-filler/releases/latest"
+
+
+def _check_for_update(callback):
+    """Background thread: fetch latest GitHub release tag and call callback(new_version or None)."""
+    def run():
+        try:
+            req = urllib.request.Request(
+                _GITHUB_RELEASES_API,
+                headers={"Accept": "application/vnd.github+json",
+                         "User-Agent": "digitall-cv-filler"}
+            )
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read().decode())
+            tag = data.get("tag_name", "").lstrip("v")
+            if tag and tag != VERSION:
+                callback(tag)
+        except Exception:
+            pass   # silently ignore — no internet / private repo without token
+    threading.Thread(target=run, daemon=True).start()
 
 
 # ── colours & fonts ─────────────────────────────────────────────────────────
@@ -972,7 +996,7 @@ class CopilotDialog(tk.Toplevel):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("CV Filler – DIGITALL Format")
+        self.title(f"CV Filler – DIGITALL Format  v{VERSION}")
         self.geometry("900x720")
         self.resizable(True, True)
         self.configure(bg=BG)
@@ -984,6 +1008,8 @@ class App(tk.Tk):
         self._raw_cv_text = ""
         self._config      = load_config()
         self._build_ui()
+        # Check for updates silently in the background
+        _check_for_update(self._on_update_available)
 
     # ── UI construction ───────────────────────────────────────────────────
 
@@ -998,6 +1024,10 @@ class App(tk.Tk):
                  font=("Segoe UI", 11)).pack(side="left", padx=0)
         _btn(hdr, "⚙  Settings", self._open_settings,
              width=12, bg="#1a3370", hover="#0f2050").pack(side="right", padx=12, pady=8)
+
+        # ── update banner (hidden until an update is found) ───────────────
+        self._update_banner = tk.Frame(self, bg="#FFF3CD")   # amber
+        # not packed yet — shown only when update is available
 
         # ── source file row ───────────────────────────────────────────────
         file_row = tk.Frame(self, bg=BG)
@@ -1141,6 +1171,24 @@ class App(tk.Tk):
                      bg="#EBF3FB", fg=LABEL_FG, font=FONT_SM).pack(side="left", padx=8)
             _btn(inner, "Use AI ✨", self._open_ai_dialog,
                  width=14, bg=COP_BG, hover=COP_HOVER).pack(side="right")
+
+    def _on_update_available(self, new_version):
+        """Called from background thread when a newer release is found."""
+        self.after(0, lambda: self._show_update_banner(new_version))
+
+    def _show_update_banner(self, new_version):
+        banner = self._update_banner
+        # Clear any previous content
+        for w in banner.winfo_children():
+            w.destroy()
+        tk.Label(banner, text=f"🔄  Update available — v{new_version} is ready.",
+                 bg="#FFF3CD", fg="#856404", font=FONT_BOLD).pack(side="left", padx=14, pady=6)
+        tk.Label(banner, text="Download the latest .exe and replace yours.",
+                 bg="#FFF3CD", fg="#856404", font=FONT).pack(side="left")
+        _btn(banner, "⬇  Download update", lambda: webbrowser.open(_GITHUB_RELEASES_PAGE),
+             width=18, bg="#856404", hover="#6d5103").pack(side="right", padx=12, pady=5)
+        # Insert banner just below the header (before everything else)
+        banner.pack(fill="x", after=self.winfo_children()[0])
 
     def _open_settings(self):
         def on_save(cfg):
