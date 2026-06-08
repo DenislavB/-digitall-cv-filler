@@ -775,16 +775,21 @@ class CopilotDialog(tk.Toplevel):
             self._cv_text_box.pack(side="left", fill="both", expand=True)
             sb_cv.pack(side="left", fill="y")
 
-            paste_cv_btn_row = tk.Frame(s1, bg=BG)
-            paste_cv_btn_row.pack(fill="x", padx=12, pady=(0, 6))
-            _btn(paste_cv_btn_row, "📋  Paste CV text from clipboard", self._paste_cv_text,
-                 width=28, bg="#6c757d", hover="#5a6268").pack(side="left")
+            # Both buttons in one row, same style
+            btn_row = tk.Frame(s1, bg=BG)
+            btn_row.pack(anchor="w", padx=12, pady=(4, 10))
+            _btn(btn_row, "📋  Paste CV text from clipboard", self._paste_cv_text,
+                 width=30, bg="#6c757d", hover="#5a6268").pack(side="left", padx=(0, 8))
+            self._copy_btn = _btn(btn_row, "📋  Copy prompt to clipboard", self._copy_prompt,
+                                  width=30, bg=COP_BG, hover=COP_HOVER)
+            self._copy_btn.pack(side="left")
         else:
             self._cv_text_box = None
-
-        self._copy_btn = _btn(s1, "📋  Copy prompt to clipboard", self._copy_prompt,
-                              width=30, bg=COP_BG, hover=COP_HOVER)
-        self._copy_btn.pack(anchor="w", padx=12, pady=(4, 10))
+            btn_row = tk.Frame(s1, bg=BG)
+            btn_row.pack(anchor="w", padx=12, pady=(4, 10))
+            self._copy_btn = _btn(btn_row, "📋  Copy prompt to clipboard", self._copy_prompt,
+                                  width=30, bg=COP_BG, hover=COP_HOVER)
+            self._copy_btn.pack(side="left")
 
         self._copy_status = tk.Label(s1, text="", bg=BG, fg="#1a7f37", font=FONT_BOLD)
         self._copy_status.pack(anchor="w", padx=12, pady=(0, 6))
