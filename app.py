@@ -502,8 +502,8 @@ def _clean_json_text(text):
                     j += 1
                 next_ch = text[j] if j < len(text) else ''
 
-                if next_ch in (',', '}', ']', ''):
-                    # e.g.  "Sofia, Bulgaria",   or  "value"}   → real closing quote
+                if next_ch in (',', '}', ']', ':', ''):
+                    # e.g.  "Sofia, Bulgaria",  or  "value"}  or  "key":  → real closing quote
                     in_string = False
                     result.append('"')
                 elif next_ch in ('\n', '\r'):
