@@ -42,7 +42,7 @@ _DEFAULT_CONFIG = {
     "azure_deployment":  "gpt-4o",
     "azure_api_version": "2024-02-01",
     "openai_model":      "gpt-4o",
-    "gemini_model":      "gemini-2.0-flash",   # FREE: gemini-2.0-flash or gemini-1.5-flash
+    "gemini_model":      "gemini-1.5-flash",    # FREE: gemini-1.5-flash or gemini-2.0-flash
     "groq_model":        "llama-3.3-70b-versatile",
     "api_key":           "",
 }
@@ -114,8 +114,8 @@ def call_ai_api(config, prompt):
                 result = json.loads(resp.read().decode("utf-8"))
             return result["candidates"][0]["content"]["parts"][0]["text"]
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", errors="replace")[:400]
-            raise RuntimeError(f"API error {e.code}: {detail}")
+            detail = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Gemini API error {e.code}:\n{detail}")
         except urllib.error.URLError as e:
             raise RuntimeError(f"Network error: {e.reason}\n\nCheck your internet connection.")
 
@@ -688,7 +688,7 @@ class SettingsDialog(tk.Toplevel):
                      bg=BG, fg="#1a7f37", font=FONT).grid(
                      row=0, column=0, columnspan=2, sticky="w", padx=12, pady=(8, 2))
             fields = [
-                ("Model",   "gemini_model", "gemini-2.0-flash  (recommended, free)"),
+                ("Model",   "gemini_model", "gemini-1.5-flash  (recommended, free)"),
                 ("API key", "api_key",      "Paste the key from AI Studio"),
             ]
             # Offset rows because we inserted a label at row 0
