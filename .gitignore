@@ -26,6 +26,10 @@ Thumbs.db
 *DIGITALL CV*.docx
 !template.docx
 
+# API key config — never commit, distribute separately
+config.json
+release/config.json
+
 # Temp/debug
 *.log
 C:/Temp/

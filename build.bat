@@ -56,16 +56,34 @@ if not exist "release" mkdir release
 copy /Y "dist\CV-Filler-DIGITALL.exe" "release\CV-Filler-DIGITALL.exe" >nul
 copy /Y "template.docx" "release\template.docx" >nul
 
+:: Copy local config.json into release so colleagues get AI pre-configured.
+:: We only copy from the project root (never the other way) and never overwrite
+:: an existing release\config.json (in case someone edited it there).
+if exist "config.json" (
+    if not exist "release\config.json" (
+        copy /Y "config.json" "release\config.json" >nul
+        echo       AI config copied to release folder.
+    ) else (
+        echo       AI config already present in release folder - keeping it.
+    )
+) else (
+    if not exist "release\config.json" (
+        echo   NOTE: No config.json found. Colleagues will need to set up AI in Settings.
+    )
+)
+
 echo.
 echo ============================================
 echo  BUILD COMPLETE!
 echo ============================================
 echo.
 echo  Files in the  release\  folder:
-echo    CV-Filler-DIGITALL.exe  ^<-- send this to colleagues
+echo    CV-Filler-DIGITALL.exe  ^<-- the app
 echo    template.docx           ^<-- must stay next to the .exe
+echo    config.json             ^<-- AI pre-configured (DO NOT share publicly)
 echo.
-echo  Both files must be kept in the same folder.
+echo  Zip the entire release\ folder and share with colleagues.
+echo  All three files must stay together.
 echo  No Python or install needed on the target PC.
 echo.
 pause
