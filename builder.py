@@ -662,6 +662,41 @@ def _replace_name_in_header(header_xml_bytes, display_name):
 
 
 # ---------------------------------------------------------------------------
+# Confidential text scrubber
+# ---------------------------------------------------------------------------
+
+def _scrub_text(text, full_name, initials, employers=None):
+    """
+    Replace the candidate's name and employer names in free-text fields
+    so no identifying information leaks into a confidential CV.
+
+    Replaces:
+      - Full name  (e.g. "Dimitar Draganchev")  → initials (e.g. "D.D.")
+      - First name alone  (e.g. "Dimitar")        → initials
+      - Each employer name                         → "Confidential"
+    """
+    if not text:
+        return text
+
+    if full_name:
+        # Full name — most specific, replace first
+        text = re.sub(re.escape(full_name), initials, text, flags=re.I)
+        # First name alone (only if long enough to avoid false positives)
+        parts = full_name.split()
+        if parts and len(parts[0]) > 3:
+            text = re.sub(r"\b" + re.escape(parts[0]) + r"\b", initials, text, flags=re.I)
+        # Last name alone (only if long enough)
+        if len(parts) > 1 and len(parts[-1]) > 3:
+            text = re.sub(r"\b" + re.escape(parts[-1]) + r"\b", initials, text, flags=re.I)
+
+    for employer in (employers or []):
+        if employer and len(employer) > 3:
+            text = re.sub(r"\b" + re.escape(employer) + r"\b", "Confidential", text, flags=re.I)
+
+    return text
+
+
+# ---------------------------------------------------------------------------
 # Main build function
 # ---------------------------------------------------------------------------
 
@@ -683,11 +718,28 @@ def build_cv(template_path, data, output_path, confidential=True):
     full_name = data.get("name", "").strip()
     display_name = _initials(full_name) if confidential else full_name
 
-    # Mask employers when confidential
+    # Collect original employer names before masking (needed for text scrubbing)
+    original_employers = [
+        j.get("employer", "").strip()
+        for j in data.get("work_experience", [])
+        if j.get("employer", "").strip().lower() not in ("", "confidential")
+    ]
+
+    # Deep-copy work experience and mask employers when confidential
     jobs = copy.deepcopy(data.get("work_experience", []))
     if confidential:
         for job in jobs:
             job["employer"] = "Confidential"
+
+    # Scrub name & employer names from all free-text fields
+    summary = data.get("summary", "")
+    if confidential:
+        summary = _scrub_text(summary, full_name, display_name, original_employers)
+        for job in jobs:
+            job["responsibilities"] = [
+                _scrub_text(r, full_name, display_name, original_employers)
+                for r in job.get("responsibilities", [])
+            ]
 
     # --- Read template ZIP in memory ---
     with open(template_path, "rb") as f:
@@ -710,7 +762,7 @@ def build_cv(template_path, data, output_path, confidential=True):
                 certs = data.get("certifications", [])
 
                 _replace_job_title(body, data.get("job_title", ""))
-                _replace_summary(body, data.get("summary", ""))
+                _replace_summary(body, summary)
                 _replace_tech_line(body, "Primary expertise",    tech.get("primary_expertise", ""))
                 _replace_tech_line(body, "Programming languages", tech.get("programming_languages", ""))
                 _replace_tech_line(body, "Methodologies",        tech.get("methodologies", ""))
