@@ -520,20 +520,48 @@ def build_copilot_prompt(cv_text):
     return _COPILOT_PROMPT_TEMPLATE.format(cv_text=cv_text)
 
 
+def _pre_clean_json(text):
+    “””
+    Pre-processing pass: fixes structural issues BEFORE the character walk.
+    Handles quirks from all major AIs (ChatGPT, Copilot, Gemini, Grok, Claude).
+    “””
+    # HTML entities (Gemini in web mode sometimes outputs these)
+    text = text.replace(“&amp;”, “&”).replace(“&lt;”, “<”).replace(“&gt;”, “>”)
+    text = text.replace(“&quot;”, ‘”’).replace(“&apos;”, “’”).replace(“&#39;”, “’”)
+
+    # Python literals (Grok / copy-paste from Python reprs)
+    text = re.sub(r’\bNone\b’,  ‘null’,  text)
+    text = re.sub(r’\bTrue\b’,  ‘true’,  text)
+    text = re.sub(r’\bFalse\b’, ‘false’, text)
+
+    # Strip // line comments (Gemini sometimes adds these)
+    text = re.sub(r’//[^\n”]*’, ‘’, text)
+
+    # Strip /* ... */ block comments
+    text = re.sub(r’/\*.*?\*/’, ‘’, text, flags=re.DOTALL)
+
+    # Python-style single-quoted keys: {‘key’: ...} → {“key”: ...}
+    # Only convert quote pairs that look like JSON keys/string values
+    # (conservative: only when surrounded by JSON structural chars)
+    text = re.sub(r”(?<=[{\[,:\s])’([^’\\]*)’(?=\s*[,}\]:])”, r’”\1”’, text)
+
+    return text
+
+
 def _clean_json_text(text):
-    """
-    Fix the most common ways Copilot produces invalid JSON:
-      1. Smart/curly quotes  "..."  →  "..."
+    “””
+    Fix the most common ways AIs produce invalid JSON:
+      1. Smart/curly quotes  “...”  →  “...”
       2. Unescaped literal newlines / tabs inside string values
       3. Trailing commas before } or ]
       4. Stray BOM or zero-width characters
-    """
+    “””
     # 1. Smart double quotes → straight
-    text = text.replace("“", '"').replace("”", '"')
+    text = text.replace(““”, ‘”’).replace(“””, ‘”’)
     # Single curly quotes → straight apostrophe (safe inside JSON string values)
-    text = text.replace("‘", "'").replace("’", "'")
+    text = text.replace(“‘”, “’”).replace(“’”, “’”)
     # En-dash / em-dash that sometimes appear in durations
-    text = text.replace("–", "-").replace("—", "-")
+    text = text.replace(“–“, “-”).replace(“—“, “-”)
 
     # 2. Replace literal newlines/tabs that appear INSIDE JSON string values.
     #    We walk character by character to track whether we're inside a string.
@@ -609,42 +637,104 @@ def _clean_json_text(text):
     return text
 
 
+def _extract_json_blocks(text):
+    """
+    Find all balanced top-level { ... } blocks in text.
+    Returns them sorted largest-first (most complete response last = preferred).
+    If an AI gave two attempts, the last/largest is usually the correct one.
+    """
+    blocks = []
+    i = 0
+    while i < len(text):
+        if text[i] == '{':
+            depth, j, in_str, esc = 0, i, False, False
+            while j < len(text):
+                c = text[j]
+                if esc:
+                    esc = False
+                elif c == '\\' and in_str:
+                    esc = True
+                elif c == '"':
+                    in_str = not in_str
+                elif not in_str:
+                    if c == '{':
+                        depth += 1
+                    elif c == '}':
+                        depth -= 1
+                        if depth == 0:
+                            blocks.append(text[i:j + 1])
+                            i = j
+                            break
+                j += 1
+        i += 1
+    # Return largest first — more complete JSON blocks are more likely correct
+    return sorted(blocks, key=len, reverse=True)
+
+
+def _unwrap_if_needed(data):
+    """
+    If the AI wrapped our JSON in an extra layer like {"result": {...}} or
+    {"cv": {...}}, unwrap it to get the actual CV data dict.
+    """
+    if not isinstance(data, dict):
+        return data
+    # If there's exactly one key and its value is a dict containing CV fields
+    cv_keys = {"name", "job_title", "summary", "technologies", "work_experience"}
+    if len(data) == 1:
+        inner = next(iter(data.values()))
+        if isinstance(inner, dict) and cv_keys & inner.keys():
+            return inner
+    return data
+
+
 def parse_copilot_response(raw_text):
-    """Extract and parse JSON from Copilot's response text."""
-    # Strip markdown code fences if Copilot wrapped it anyway
-    text = re.sub(r"```(?:json)?\s*", "", raw_text).strip()
-    text = re.sub(r"```\s*$", "", text).strip()
+    """
+    Robustly extract and parse JSON from any AI's response.
+    Handles all major AI output styles: ChatGPT, Copilot, Gemini, Grok, Claude.
+    """
+    # Step 1: strip markdown code fences (``` json ... ```)
+    text = re.sub(r"```(?:json|JSON)?\s*", "", raw_text)
+    text = re.sub(r"```", "", text).strip()
 
-    # Find first { ... last }
-    start = text.find("{")
-    end   = text.rfind("}")
-    if start == -1 or end == -1:
+    # Step 2: pre-clean structural issues (HTML entities, Python literals, comments)
+    text = _pre_clean_json(text)
+
+    # Step 3: extract all balanced JSON blocks from the text
+    blocks = _extract_json_blocks(text)
+    if not blocks:
         raise ValueError(
-            "No JSON object found in the pasted text.\n"
-            "Make sure you copied Copilot's full response."
+            "No JSON object found in the AI's response.\n"
+            "Make sure you copied the full response (Ctrl+A, Ctrl+C)."
         )
-    json_str = text[start : end + 1]
 
-    # First attempt — parse as-is
-    try:
-        return json.loads(json_str)
-    except json.JSONDecodeError:
-        pass
+    last_exc = None
+    for block in blocks:
+        # Try 1: parse as-is
+        try:
+            return _unwrap_if_needed(json.loads(block))
+        except json.JSONDecodeError:
+            pass
 
-    # Second attempt — apply auto-fixes for common Copilot quirks
-    cleaned = _clean_json_text(json_str)
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        # Show a helpful snippet around the problem location
-        char = exc.pos or 0
-        snippet = cleaned[max(0, char - 60) : char + 60].replace("\n", "↵")
-        raise ValueError(
-            f"Could not parse Copilot's response as JSON.\n\n"
-            f"Error: {exc.msg} (near char {char})\n"
-            f"Context: …{snippet}…\n\n"
-            f"Try copying Copilot's response again — make sure you got the full JSON block."
-        )
+        # Try 2: apply character-level fixes (smart quotes, inner quotes, newlines)
+        cleaned = _clean_json_text(block)
+        try:
+            return _unwrap_if_needed(json.loads(cleaned))
+        except json.JSONDecodeError as exc:
+            last_exc = (exc, cleaned)
+
+    # All blocks failed — report the error with context from the best candidate
+    exc, cleaned = last_exc
+    char = exc.pos or 0
+    snippet = cleaned[max(0, char - 60): char + 60].replace("\n", "↵")
+    raise ValueError(
+        f"Could not parse the AI's response as JSON.\n\n"
+        f"Error: {exc.msg} (near char {char})\n"
+        f"Context: …{snippet}…\n\n"
+        f"Tips:\n"
+        f"• Make sure you copied the AI's FULL response (Ctrl+A then Ctrl+C)\n"
+        f"• Try asking the AI: 'Please output only the raw JSON, no explanation'\n"
+        f"• Try a different AI (ChatGPT, Gemini, Grok all work)"
+    )
 
 
 # ── Settings dialog ──────────────────────────────────────────────────────────
